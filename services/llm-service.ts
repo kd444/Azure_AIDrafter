@@ -1,39 +1,67 @@
-import { generateText } from "ai"
-import { openai } from "@ai-sdk/openai"
+import { generateText } from "ai";
+import { openai } from "@ai-sdk/openai";
 
 export interface CadModelData {
-  rooms: {
-    name: string
-    width: number
-    length: number
-    height: number
-    x: number
-    y: number
-    z: number
-    connected_to: string[]
-  }[]
-  windows: {
-    room: string
-    wall: string
-    width: number
-    height: number
-    position: number
-  }[]
-  doors: {
-    from: string
-    to: string
-    width: number
-    height: number
-  }[]
+    rooms: {
+        name: string;
+        width: number;
+        length: number;
+        height: number;
+        x: number;
+        y: number;
+        z: number;
+        connected_to: string[];
+    }[];
+    windows: {
+        room: string;
+        wall: string;
+        width: number;
+        height: number;
+        position: number;
+    }[];
+    doors: {
+        from: string;
+        to: string;
+        width: number;
+        height: number;
+    }[];
+}
+
+// Helper function to extract JSON from markdown code blocks if needed
+function extractJsonFromMarkdown(text: string): string {
+    // Check if the text is wrapped in markdown code blocks
+    const jsonRegex = /```(?:json)?\s*\n([\s\S]*?)\n```/;
+    const match = text.match(jsonRegex);
+
+    if (match && match[1]) {
+        return match[1].trim();
+    }
+
+    // If no markdown code blocks found, return the original text
+    return text.trim();
+}
+
+// Helper function to extract code from markdown code blocks if needed
+function extractCodeFromMarkdown(text: string): string {
+    // Check if the text is wrapped in markdown code blocks
+    const codeRegex = /```(?:javascript|js)?\s*\n([\s\S]*?)\n```/;
+    const match = text.match(codeRegex);
+
+    if (match && match[1]) {
+        return match[1].trim();
+    }
+
+    // If no markdown code blocks found, return the original text
+    return text.trim();
 }
 
 export async function generateCadModel(prompt: string): Promise<{
-  modelData: CadModelData
-  code: string
+    modelData: CadModelData;
+    code: string;
 }> {
-  try {
-    // Define the system prompt for structured output
-    const systemPrompt = `
+    try {
+        // Define the system prompt for structured output
+        const systemPrompt = `
       You are an AI assistant specialized in architectural design and CAD modeling.
       Your task is to generate a structured JSON representation of a building or space based on the user's description.
       
@@ -77,21 +105,56 @@ export async function generateCadModel(prompt: string): Promise<{
       4. All values are numbers (not strings)
       5. The JSON is valid and properly formatted
       
-      Return ONLY the JSON object with no additional text.
-    `
+      Return ONLY the JSON object with no additional text or markdown formatting.
+    `;
 
-    // Generate the model data using the AI SDK
-    const { text: modelDataText } = await generateText({
-      model: openai("gpt-4o"),
-      system: systemPrompt,
-      prompt: prompt,
-    })
+        // Generate the model data using the AI SDK
+        const { text: modelDataText } = await generateText({
+            model: openai("gpt-4o"),
+            system: systemPrompt,
+            prompt: prompt,
+        });
 
-    // Parse the JSON response
-    const modelData = JSON.parse(modelDataText) as CadModelData
+        // Extract JSON from markdown if needed and parse it
+        const cleanedJsonText = extractJsonFromMarkdown(modelDataText);
+        let modelData: CadModelData;
 
-    // Generate the Three.js code
-    const codeSystemPrompt = `
+        try {
+            modelData = JSON.parse(cleanedJsonText) as CadModelData;
+        } catch (error) {
+            console.error("Error parsing JSON:", error);
+            console.error("Raw response:", modelDataText);
+            console.error("Cleaned JSON:", cleanedJsonText);
+
+            // Fallback to a simple model if parsing fails
+            modelData = {
+                rooms: [
+                    {
+                        name: "Living Room",
+                        width: 5,
+                        length: 4,
+                        height: 2.8,
+                        x: 0,
+                        y: 0,
+                        z: 0,
+                        connected_to: [],
+                    },
+                ],
+                windows: [
+                    {
+                        room: "Living Room",
+                        wall: "south",
+                        width: 2,
+                        height: 1.5,
+                        position: 0.5,
+                    },
+                ],
+                doors: [],
+            };
+        }
+
+        // Generate the Three.js code
+        const codeSystemPrompt = `
       You are an AI assistant specialized in 3D visualization with Three.js.
       
       Your task is to generate Three.js code that visualizes the building or space described in the provided JSON structure.
@@ -104,23 +167,27 @@ export async function generateCadModel(prompt: string): Promise<{
       5. Implement an animation loop for rendering
       6. Handle window resizing
       
-      Return ONLY the complete, executable JavaScript code with no additional text.
-    `
+      Return the complete, executable JavaScript code without markdown formatting.
+    `;
 
-    // Generate the Three.js code using the AI SDK
-    const { text: codeText } = await generateText({
-      model: openai("gpt-4o"),
-      system: codeSystemPrompt,
-      prompt: `Generate Three.js code to visualize this building: ${JSON.stringify(modelData)}`,
-    })
+        // Generate the Three.js code using the AI SDK
+        const { text: codeText } = await generateText({
+            model: openai("gpt-4o"),
+            system: codeSystemPrompt,
+            prompt: `Generate Three.js code to visualize this building: ${JSON.stringify(
+                modelData
+            )}`,
+        });
 
-    return {
-      modelData,
-      code: codeText,
+        // Extract code from markdown if needed
+        const cleanedCode = extractCodeFromMarkdown(codeText);
+
+        return {
+            modelData,
+            code: cleanedCode,
+        };
+    } catch (error) {
+        console.error("Error generating CAD model:", error);
+        throw new Error("Failed to generate CAD model");
     }
-  } catch (error) {
-    console.error("Error generating CAD model:", error)
-    throw new Error("Failed to generate CAD model")
-  }
 }
-
