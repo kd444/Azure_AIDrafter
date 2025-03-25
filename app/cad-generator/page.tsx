@@ -29,8 +29,10 @@ import {
     Moon,
     Sunrise,
     Sunset,
+    Pencil,
 } from "lucide-react";
 import { CadModelViewer } from "@/components/cad-model-viewer";
+import { DesignCanvas } from "@/components/design-canvas";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "@/components/ui/use-toast";
 
@@ -40,6 +42,7 @@ export default function CadGeneratorPage() {
     const [generatedModel, setGeneratedModel] = useState<any>(null);
     const [generatedCode, setGeneratedCode] = useState("");
     const [activeTab, setActiveTab] = useState("visual");
+    const [inputMode, setInputMode] = useState<"text" | "sketch">("text");
     const [copied, setCopied] = useState(false);
     const [viewerSettings, setViewerSettings] = useState({
         showGrid: true,
@@ -49,37 +52,144 @@ export default function CadGeneratorPage() {
         wireframe: false,
         zoom: 1,
     });
+    const [processingSteps, setProcessingSteps] = useState<{
+        [key: string]: "pending" | "processing" | "completed" | "error";
+    }>({
+        sketch: "pending",
+        vision: "pending",
+        openai: "pending",
+        model: "pending",
+    });
 
     const codeRef = useRef<HTMLPreElement>(null);
+    const canvasRef = useRef<any>(null);
+
+    // Function to update processing steps
+    const updateProcessingStep = (
+        step: string,
+        status: "pending" | "processing" | "completed" | "error"
+    ) => {
+        setProcessingSteps((prev) => ({
+            ...prev,
+            [step]: status,
+        }));
+    };
+
+    // Function to capture sketch data
+    const captureSketchData = () => {
+        if (!canvasRef.current) return null;
+
+        try {
+            // Get canvas element from the DesignCanvas component
+            const canvasElement = canvasRef.current.getCanvasElement();
+            if (!canvasElement) {
+                console.warn("Canvas element not available");
+                return null;
+            }
+
+            // Convert canvas to data URL
+            return canvasElement.toDataURL("image/png");
+        } catch (error) {
+            console.error("Error capturing sketch data:", error);
+            return null;
+        }
+    };
 
     const handleGenerate = async () => {
-        if (!prompt.trim()) return;
+        // Reset processing steps
+        setProcessingSteps({
+            sketch: "pending",
+            vision: "pending",
+            openai: "pending",
+            model: "pending",
+        });
 
         setIsGenerating(true);
 
         try {
-            // Call our API endpoint
+            // Capture sketch data if in sketch mode
+            updateProcessingStep("sketch", "processing");
+            const sketchData =
+                inputMode === "sketch" ? captureSketchData() : null;
+
+            // Mark sketch processing as complete
+            if (inputMode === "sketch") {
+                setTimeout(
+                    () => updateProcessingStep("sketch", "completed"),
+                    500
+                );
+            } else {
+                updateProcessingStep("sketch", "completed");
+            }
+
+            // Prepare request payload - matches Azure API expectations
+            const payload = {};
+
+            // Always include a prompt - use default if in sketch-only mode
+            if (inputMode === "text" && prompt.trim()) {
+                payload.prompt = prompt.trim();
+            } else if (inputMode === "sketch") {
+                // For sketch-only mode, send a default prompt
+                payload.prompt = "Generate a CAD model based on this sketch";
+            } else {
+                throw new Error(
+                    "No input provided. Please enter a text description or create a sketch."
+                );
+            }
+
+            // Add sketch data if available
+            if (sketchData) {
+                payload.sketchData = sketchData;
+                // When using sketch, mark vision processing as active
+                updateProcessingStep("vision", "processing");
+            }
+
+            console.log("Generating CAD model with Azure services:", {
+                inputMode,
+                hasPrompt: !!payload.prompt,
+                hasSketchData: !!payload.sketchData,
+            });
+
+            // Mark OpenAI processing as active
+            updateProcessingStep("openai", "processing");
+
+            // Call our API endpoint - connects to Azure services
             const response = await fetch("/api/cad-generator", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({ prompt }),
+                body: JSON.stringify(payload),
             });
 
+            // If sketch was provided, mark vision processing as complete
+            if (sketchData) {
+                updateProcessingStep("vision", "completed");
+            }
+
+            // Mark OpenAI processing as complete
+            updateProcessingStep("openai", "completed");
+
+            // Mark model generation as active
+            updateProcessingStep("model", "processing");
+
             if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                updateProcessingStep("model", "error");
                 throw new Error(
-                    `Failed to generate model: ${response.status} ${response.statusText}`
+                    `Failed to generate model with Azure: ${response.status} ${
+                        response.statusText
+                    }${errorData.details ? ` - ${errorData.details}` : ""}`
                 );
             }
 
             const data = await response.json();
-
-            console.log("API Response:", data);
+            console.log("Azure API Response:", data);
 
             if (!data.modelData || !data.code) {
-                console.error("Invalid response format:", data);
-                throw new Error("Invalid response format from API");
+                console.error("Invalid response format from Azure:", data);
+                updateProcessingStep("model", "error");
+                throw new Error("Invalid response format from Azure API");
             }
 
             // Ensure the modelData has the expected structure
@@ -87,9 +197,18 @@ export default function CadGeneratorPage() {
                 !Array.isArray(data.modelData.rooms) ||
                 data.modelData.rooms.length === 0
             ) {
-                console.error("Invalid or empty rooms array:", data.modelData);
-                throw new Error("Invalid model data: no rooms found");
+                console.error(
+                    "Invalid or empty rooms array from Azure:",
+                    data.modelData
+                );
+                updateProcessingStep("model", "error");
+                throw new Error(
+                    "Invalid model data from Azure: no rooms found"
+                );
             }
+
+            // Mark model generation as complete
+            updateProcessingStep("model", "completed");
 
             setGeneratedModel(data.modelData);
             setGeneratedCode(data.code);
@@ -97,16 +216,27 @@ export default function CadGeneratorPage() {
 
             toast({
                 title: "Model generated successfully",
-                description:
-                    "Your CAD model has been created based on your description.",
+                description: "Your CAD model has been created using Azure AI.",
             });
         } catch (error) {
-            console.error("Error generating model:", error);
+            console.error("Error with Azure services:", error);
 
-            // Fallback to mock data if API fails
+            // Update any pending steps to error
+            Object.keys(processingSteps).forEach((step) => {
+                if (
+                    processingSteps[step] === "processing" ||
+                    processingSteps[step] === "pending"
+                ) {
+                    updateProcessingStep(step, "error");
+                }
+            });
+
+            // Fallback to mock data if Azure API fails
             const mockResponse = {
-                modelData: generateMockModelData(prompt),
-                code: generateMockCode(prompt),
+                modelData: generateMockModelData(
+                    prompt || "Floor plan from sketch"
+                ),
+                code: generateMockCode(prompt || "Floor plan from sketch"),
             };
 
             setGeneratedModel(mockResponse.modelData);
@@ -116,14 +246,13 @@ export default function CadGeneratorPage() {
             toast({
                 title: "Using fallback data",
                 description:
-                    "Could not connect to API. Using sample data instead.",
+                    "Could not connect to Azure API. Using sample data instead.",
                 variant: "destructive",
             });
         } finally {
             setIsGenerating(false);
         }
     };
-
     const handleCopyCode = () => {
         navigator.clipboard.writeText(generatedCode);
         setCopied(true);
@@ -184,8 +313,8 @@ export default function CadGeneratorPage() {
                     length: 5,
                     height: 3,
                     x: 5,
-                    y: 4,
-                    z: 0,
+                    y: 0,
+                    z: 4,
                     connected_to: ["kitchen"],
                 },
                 {
@@ -194,8 +323,8 @@ export default function CadGeneratorPage() {
                     length: 5,
                     height: 3,
                     x: 0,
-                    y: 7,
-                    z: 0,
+                    y: 0,
+                    z: 7,
                     connected_to: [
                         "living",
                         "bedroom1",
@@ -209,8 +338,8 @@ export default function CadGeneratorPage() {
                     length: 4,
                     height: 3,
                     x: -4,
-                    y: 7,
-                    z: 0,
+                    y: 0,
+                    z: 7,
                     connected_to: ["hallway"],
                 },
                 {
@@ -219,8 +348,8 @@ export default function CadGeneratorPage() {
                     length: 4,
                     height: 3,
                     x: 2,
-                    y: 7,
-                    z: 0,
+                    y: 0,
+                    z: 7,
                     connected_to: ["hallway"],
                 },
                 {
@@ -229,8 +358,8 @@ export default function CadGeneratorPage() {
                     length: 2,
                     height: 3,
                     x: 0,
-                    y: 12,
-                    z: 0,
+                    y: 0,
+                    z: 12,
                     connected_to: ["hallway"],
                 },
             ],
@@ -311,28 +440,28 @@ scene.add(directionalLight);
 
 // Create rooms
 function createRoom(name, width, length, height, x, y, z) {
-  const geometry = new THREE.BoxGeometry(width, height, length);
-  const edges = new THREE.EdgesGeometry(geometry);
-  const material = new THREE.LineBasicMaterial({ color: 0x000000 });
-  const wireframe = new THREE.LineSegments(edges, material);
-  wireframe.position.set(x + width/2, y + height/2, z + length/2);
-  scene.add(wireframe);
-  
-  // Add floor
-  const floorGeometry = new THREE.PlaneGeometry(width, length);
-  const floorMaterial = new THREE.MeshStandardMaterial({ 
-    color: 0xcccccc, 
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.7
-  });
-  const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-  floor.rotation.x = Math.PI / 2;
-  floor.position.set(x + width/2, 0.01, z + length/2);
-  floor.receiveShadow = true;
-  scene.add(floor);
-  
-  return { wireframe, floor };
+const geometry = new THREE.BoxGeometry(width, height, length);
+const edges = new THREE.EdgesGeometry(geometry);
+const material = new THREE.LineBasicMaterial({ color: 0x000000 });
+const wireframe = new THREE.LineSegments(edges, material);
+wireframe.position.set(x + width/2, y + height/2, z + length/2);
+scene.add(wireframe);
+
+// Add floor
+const floorGeometry = new THREE.PlaneGeometry(width, length);
+const floorMaterial = new THREE.MeshStandardMaterial({ 
+  color: 0xcccccc, 
+  side: THREE.DoubleSide,
+  transparent: true,
+  opacity: 0.7
+});
+const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+floor.rotation.x = Math.PI / 2;
+floor.position.set(x + width/2, 0.01, z + length/2);
+floor.receiveShadow = true;
+scene.add(floor);
+
+return { wireframe, floor };
 }
 
 // Create rooms
@@ -346,18 +475,18 @@ const bathroom = createRoom("bathroom", 3, 2, 3, 0, 0, 12);
 
 // Animation loop
 function animate() {
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
+requestAnimationFrame(animate);
+controls.update();
+renderer.render(scene, camera);
 }
 
 animate();
 
 // Handle window resize
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+camera.aspect = window.innerWidth / window.innerHeight;
+camera.updateProjectionMatrix();
+renderer.setSize(window.innerWidth, window.innerHeight);
 });`;
     };
 
@@ -368,6 +497,106 @@ window.addEventListener('resize', () => {
         "Design a restaurant with seating for 60 people, a bar area, kitchen, and restrooms.",
     ];
 
+    // Azure Services Info Component
+    const AzureServicesInfo = () => {
+        return (
+            <Card>
+                <CardContent className="p-6 space-y-4">
+                    <div className="flex items-center gap-2">
+                        <div className="bg-blue-100 p-2 rounded-md">
+                            <svg
+                                className="h-6 w-6 text-blue-700"
+                                viewBox="0 0 24 24"
+                                fill="currentColor"
+                            >
+                                <path d="M12.266 22.5c5.283-.024 9.653-4.268 9.727-9.523-.499.044-1.385.099-2.293.099-5.729 0-10.531-4.097-11.6-9.55-.151.775-.273 1.57-.273 2.385 0 4.241 2.341 7.936 5.795 9.892L4.52 9.77l-1.553 3.106A9.939 9.939 0 0 0 2.25 12c0-5.799 4.701-10.5 10.5-10.5S23.25 6.201 23.25 12s-4.701 10.5-10.5 10.5c-.16 0-.316-.012-.475-.02l-.009.02z" />
+                            </svg>
+                        </div>
+                        <h2 className="text-lg font-semibold">
+                            Azure AI Services
+                        </h2>
+                    </div>
+
+                    <div className="space-y-3 text-sm">
+                        <div className="flex items-start gap-3">
+                            <div className="bg-blue-50 p-1 rounded">
+                                <svg
+                                    className="h-5 w-5 text-blue-600"
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                >
+                                    <path d="M7.5 6.75V0h9v6.75h-9zm9 3.75V24h-9V10.5h9zM0 10.5V3.75h6.75V10.5H0zm0 10.5v-6.75h6.75V21H0zm16.5-10.5V3.75h6.75V10.5h-6.75zm0 10.5v-6.75h6.75V21h-6.75z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <p className="font-medium">
+                                    Azure OpenAI Service
+                                </p>
+                                <p className="text-muted-foreground">
+                                    Powers the natural language understanding
+                                    and 3D model generation
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="flex items-start gap-3">
+                            <div className="bg-blue-50 p-1 rounded">
+                                <svg
+                                    className="h-5 w-5 text-blue-600"
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                >
+                                    <path d="M6.79 5.093A9.002 9.002 0 0 0 12 21a9 9 0 0 0 8.942-8.138A2.25 2.25 0 1 0 18 10.5h-2.25a2.25 2.25 0 0 0-2.25 2.25c0 .601.236 1.148.621 1.552A5.988 5.988 0 0 1 12 15a6 6 0 0 1-5.604-8.178l.493.099a1.35 1.35 0 0 0 1.558-.99 1.35 1.35 0 0 0-.99-1.558l-2.277-.456a1.35 1.35 0 0 0-1.558.99l-.456 2.277a1.35 1.35 0 0 0 2.634.558l.099-.493Z" />
+                                    <path d="M10.5 14.25A2.25 2.25 0 0 0 12 12v2.25l-1.5 1.5Z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <p className="font-medium">
+                                    Azure Computer Vision
+                                </p>
+                                <p className="text-muted-foreground">
+                                    Analyzes sketch inputs and extracts spatial
+                                    information
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="flex items-start gap-3">
+                            <div className="bg-blue-50 p-1 rounded">
+                                <svg
+                                    className="h-5 w-5 text-blue-600"
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                >
+                                    <path d="M4.5 3.75a3 3 0 00-3 3v.75h21v-.75a3 3 0 00-3-3h-15z" />
+                                    <path
+                                        fillRule="evenodd"
+                                        d="M22.5 9.75h-21v7.5a3 3 0 003 3h15a3 3 0 003-3v-7.5zm-18 3.75a.75.75 0 01.75-.75h6a.75.75 0 010 1.5h-6a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5h3a.75.75 0 000-1.5h-3z"
+                                        clipRule="evenodd"
+                                    />
+                                </svg>
+                            </div>
+                            <div>
+                                <p className="font-medium">Azure Functions</p>
+                                <p className="text-muted-foreground">
+                                    Orchestrates the multi-agent AI system
+                                    workflow
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="text-xs text-muted-foreground pt-2 border-t">
+                        <p>
+                            This application leverages Azure's AI services to
+                            transform your input into architectural designs.
+                        </p>
+                    </div>
+                </CardContent>
+            </Card>
+        );
+    };
+
     return (
         <div className="container mx-auto py-6">
             <div className="flex flex-col space-y-6">
@@ -376,7 +605,8 @@ window.addEventListener('resize', () => {
                         CAD Model Generator
                     </h1>
                     <p className="text-muted-foreground mt-1">
-                        Generate 3D CAD models from text descriptions using AI
+                        Generate 3D CAD models from text descriptions or
+                        sketches using AI
                     </p>
                 </div>
 
@@ -384,42 +614,104 @@ window.addEventListener('resize', () => {
                     <div className="lg:col-span-1 space-y-6">
                         <Card>
                             <CardContent className="p-6 space-y-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="prompt">Text Prompt</Label>
-                                    <Textarea
-                                        id="prompt"
-                                        placeholder="Describe your building or space in detail..."
-                                        className="min-h-[200px] resize-none"
-                                        value={prompt}
-                                        onChange={(e) =>
-                                            setPrompt(e.target.value)
-                                        }
-                                    />
-                                </div>
-
-                                <div className="space-y-2">
-                                    <Label>Example Prompts</Label>
-                                    <div className="space-y-2">
-                                        {examplePrompts.map(
-                                            (example, index) => (
-                                                <div
-                                                    key={index}
-                                                    className="text-sm p-2 border rounded-md cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
-                                                    onClick={() =>
-                                                        setPrompt(example)
-                                                    }
-                                                >
-                                                    {example}
-                                                </div>
-                                            )
-                                        )}
+                                <div className="flex justify-between items-center">
+                                    <h2 className="text-lg font-semibold">
+                                        Input Method
+                                    </h2>
+                                    <div className="flex space-x-2">
+                                        <Button
+                                            onClick={() => setInputMode("text")}
+                                            variant={
+                                                inputMode === "text"
+                                                    ? "default"
+                                                    : "outline"
+                                            }
+                                            size="sm"
+                                            className="gap-1"
+                                        >
+                                            <Wand2 className="h-4 w-4" />
+                                            Text
+                                        </Button>
+                                        <Button
+                                            onClick={() =>
+                                                setInputMode("sketch")
+                                            }
+                                            variant={
+                                                inputMode === "sketch"
+                                                    ? "default"
+                                                    : "outline"
+                                            }
+                                            size="sm"
+                                            className="gap-1"
+                                        >
+                                            <Pencil className="h-4 w-4" />
+                                            Sketch
+                                        </Button>
                                     </div>
                                 </div>
+
+                                {inputMode === "text" ? (
+                                    <>
+                                        <div className="space-y-2">
+                                            <Label htmlFor="prompt">
+                                                Text Prompt
+                                            </Label>
+                                            <Textarea
+                                                id="prompt"
+                                                placeholder="Describe your building or space in detail..."
+                                                className="min-h-[200px] resize-none"
+                                                value={prompt}
+                                                onChange={(e) =>
+                                                    setPrompt(e.target.value)
+                                                }
+                                            />
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <Label>Example Prompts</Label>
+                                            <div className="space-y-2">
+                                                {examplePrompts.map(
+                                                    (example, index) => (
+                                                        <div
+                                                            key={index}
+                                                            className="text-sm p-2 border rounded-md cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
+                                                            onClick={() =>
+                                                                setPrompt(
+                                                                    example
+                                                                )
+                                                            }
+                                                        >
+                                                            {example}
+                                                        </div>
+                                                    )
+                                                )}
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="space-y-2">
+                                        <Label>Sketch Your Design</Label>
+                                        <div className="border rounded-md overflow-hidden bg-white h-[300px]">
+                                            <DesignCanvas
+                                                projectId="cad-generator"
+                                                ref={canvasRef}
+                                            />
+                                        </div>
+                                        <p className="text-sm text-muted-foreground">
+                                            Draw a floor plan or sketch of your
+                                            design. Use the tools above to
+                                            create your sketch.
+                                        </p>
+                                    </div>
+                                )}
 
                                 <Button
                                     className="w-full gap-2"
                                     onClick={handleGenerate}
-                                    disabled={isGenerating || !prompt.trim()}
+                                    disabled={
+                                        isGenerating ||
+                                        (inputMode === "text" && !prompt.trim())
+                                    }
                                 >
                                     {isGenerating ? (
                                         <>
@@ -433,6 +725,101 @@ window.addEventListener('resize', () => {
                                         </>
                                     )}
                                 </Button>
+
+                                {isGenerating && (
+                                    <div className="mt-4 border rounded-md p-3 bg-muted/30">
+                                        <h3 className="text-sm font-medium mb-2">
+                                            Azure AI Processing
+                                        </h3>
+                                        <div className="space-y-2">
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-xs">
+                                                    {inputMode === "sketch"
+                                                        ? "Computer Vision Analysis"
+                                                        : "Input Processing"}
+                                                </span>
+                                                <div className="flex items-center">
+                                                    {processingSteps.sketch ===
+                                                        "pending" && (
+                                                        <span className="text-xs text-muted-foreground">
+                                                            Waiting
+                                                        </span>
+                                                    )}
+                                                    {processingSteps.sketch ===
+                                                        "processing" && (
+                                                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                                                    )}
+                                                    {processingSteps.sketch ===
+                                                        "completed" && (
+                                                        <Check className="h-3 w-3 text-green-500" />
+                                                    )}
+                                                    {processingSteps.sketch ===
+                                                        "error" && (
+                                                        <span className="text-xs text-destructive">
+                                                            Error
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-xs">
+                                                    Azure OpenAI Processing
+                                                </span>
+                                                <div className="flex items-center">
+                                                    {processingSteps.openai ===
+                                                        "pending" && (
+                                                        <span className="text-xs text-muted-foreground">
+                                                            Waiting
+                                                        </span>
+                                                    )}
+                                                    {processingSteps.openai ===
+                                                        "processing" && (
+                                                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                                                    )}
+                                                    {processingSteps.openai ===
+                                                        "completed" && (
+                                                        <Check className="h-3 w-3 text-green-500" />
+                                                    )}
+                                                    {processingSteps.openai ===
+                                                        "error" && (
+                                                        <span className="text-xs text-destructive">
+                                                            Error
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-xs">
+                                                    3D Model Generation
+                                                </span>
+                                                <div className="flex items-center">
+                                                    {processingSteps.model ===
+                                                        "pending" && (
+                                                        <span className="text-xs text-muted-foreground">
+                                                            Waiting
+                                                        </span>
+                                                    )}
+                                                    {processingSteps.model ===
+                                                        "processing" && (
+                                                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                                                    )}
+                                                    {processingSteps.model ===
+                                                        "completed" && (
+                                                        <Check className="h-3 w-3 text-green-500" />
+                                                    )}
+                                                    {processingSteps.model ===
+                                                        "error" && (
+                                                        <span className="text-xs text-destructive">
+                                                            Error
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
                             </CardContent>
                         </Card>
 
@@ -701,6 +1088,8 @@ window.addEventListener('resize', () => {
                                 </CardContent>
                             </Card>
                         )}
+
+                        <AzureServicesInfo />
                     </div>
 
                     <div className="lg:col-span-2">
@@ -782,12 +1171,10 @@ window.addEventListener('resize', () => {
                                                             Yet
                                                         </h3>
                                                         <p className="text-muted-foreground max-w-md">
-                                                            Enter a detailed
-                                                            description of your
-                                                            building or space
-                                                            and click "Generate
-                                                            CAD Model" to create
-                                                            a 3D visualization.
+                                                            {inputMode ===
+                                                            "text"
+                                                                ? "Enter a detailed description of your building or space and click 'Generate CAD Model'."
+                                                                : "Create a sketch of your floor plan and click 'Generate CAD Model'."}
                                                         </p>
                                                     </div>
                                                 </div>
