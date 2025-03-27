@@ -61,7 +61,11 @@ export class InterpreterAgent extends BaseAgent {
         }
     }
 
-    private async analyzeSketch(sketchDataUrl: string): Promise<any> {
+    // In interpreter-agent.ts or wherever you define the analyzeSketch function
+    /**
+     * Analyzes a sketch using Azure Computer Vision
+     */
+    async analyzeSketch(sketchDataUrl: string): Promise<any> {
         try {
             // Remove the data URL prefix to get the base64 content
             const base64Image = sketchDataUrl.replace(
@@ -69,21 +73,33 @@ export class InterpreterAgent extends BaseAgent {
                 ""
             );
 
-            // Analyze the image with Computer Vision
+            // Analyze the image with Computer Vision - using only supported features
             const result = await this.visionClient.analyzeImageInStream(
                 Buffer.from(base64Image, "base64"),
                 {
-                    visualFeatures: ["Objects", "Categories", "Tags", "Lines"],
+                    visualFeatures: [
+                        "Objects",
+                        "Categories",
+                        "Tags",
+                        "Description",
+                    ],
+                    // "Lines" is not supported, so we removed it
                 }
+            );
+
+            // Extract lines from detected objects
+            const derivedLines = this.extractLinesFromObjects(
+                result.objects || []
             );
 
             // Enhanced analysis for architectural elements
             const enhancedAnalysis = {
                 objects: result.objects || [],
                 tags: result.tags || [],
-                lines: result.lines || [],
-                potentialRooms: this.detectPotentialRooms(result),
-                dimensions: this.estimateDimensions(result),
+                categories: result.categories || [],
+                description: result.description?.captions?.[0]?.text || "",
+                derivedLines: derivedLines,
+                potentialRooms: this.detectPotentialRooms(result, derivedLines),
             };
 
             return enhancedAnalysis;
@@ -97,14 +113,75 @@ export class InterpreterAgent extends BaseAgent {
         }
     }
 
-    private detectPotentialRooms(visionResult: any): any[] {
-        // Logic to detect potential rooms from vision analysis
-        // This is simplified - a real implementation would be more sophisticated
+    private extractLinesFromObjects(objects: any[]): any[] {
+        const lines = [];
+
+        // Process each object's bounding box to extract potential lines
+        for (const obj of objects || []) {
+            if (obj.rectangle) {
+                const { x, y, w, h } = obj.rectangle;
+
+                // Create horizontal lines (top and bottom of objects)
+                lines.push({
+                    type: "horizontal",
+                    x1: x,
+                    y1: y,
+                    x2: x + w,
+                    y2: y,
+                    confidence: obj.confidence,
+                    objectName: obj.object,
+                });
+
+                lines.push({
+                    type: "horizontal",
+                    x1: x,
+                    y1: y + h,
+                    x2: x + w,
+                    y2: y + h,
+                    confidence: obj.confidence,
+                    objectName: obj.object,
+                });
+
+                // Create vertical lines (left and right of objects)
+                lines.push({
+                    type: "vertical",
+                    x1: x,
+                    y1: y,
+                    x2: x,
+                    y2: y + h,
+                    confidence: obj.confidence,
+                    objectName: obj.object,
+                });
+
+                lines.push({
+                    type: "vertical",
+                    x1: x + w,
+                    y1: y,
+                    x2: x + w,
+                    y2: y + h,
+                    confidence: obj.confidence,
+                    objectName: obj.object,
+                });
+            }
+        }
+
+        return lines;
+    }
+    // You'll need to modify detectPotentialRooms to accept derivedLines
+    private detectPotentialRooms(
+        visionResult: any,
+        derivedLines: any[]
+    ): any[] {
+        // This function should now use the derivedLines parameter instead of visionResult.lines
         const potentialRooms = [];
 
-        // Check for rectangular objects that might be rooms
-        const rectangles = (visionResult.objects || []).filter(
-            (obj: any) => obj.object === "rectangle" || obj.object === "square"
+        // Look for rectangle or square objects that might represent rooms
+        const objects = visionResult.objects || [];
+        const rectangles = objects.filter(
+            (obj: any) =>
+                obj.object === "rectangle" ||
+                obj.object === "square" ||
+                obj.object === "shape"
         );
 
         // Convert rectangles to potential rooms
@@ -122,6 +199,43 @@ export class InterpreterAgent extends BaseAgent {
                 });
             }
         });
+
+        // If we have lines, try to detect rooms from them
+        if (derivedLines && derivedLines.length > 0) {
+            // Group lines by orientation (horizontal/vertical)
+            const horizontalLines = derivedLines.filter(
+                (line: any) => line.type === "horizontal"
+            );
+            const verticalLines = derivedLines.filter(
+                (line: any) => line.type === "vertical"
+            );
+
+            // Add overall room if no specific rooms were detected
+            if (
+                potentialRooms.length === 0 &&
+                (horizontalLines.length > 0 || verticalLines.length > 0)
+            ) {
+                // Calculate the bounds based on lines
+                const allX = derivedLines.flatMap((l: any) => [l.x1, l.x2]);
+                const allY = derivedLines.flatMap((l: any) => [l.y1, l.y2]);
+
+                const minX = Math.min(...allX);
+                const maxX = Math.max(...allX);
+                const minY = Math.min(...allY);
+                const maxY = Math.max(...allY);
+
+                potentialRooms.push({
+                    name: "mainRoom",
+                    bounds: {
+                        x: minX,
+                        y: minY,
+                        width: maxX - minX,
+                        height: maxY - minY,
+                    },
+                    confidence: 0.8,
+                });
+            }
+        }
 
         return potentialRooms;
     }

@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -29,12 +28,17 @@ import {
     Moon,
     Sunrise,
     Sunset,
-    Pencil,
+    Maximize2,
+    GripVertical,
+    LayoutPanelLeft,
+    LayoutPanelTop,
+    Expand,
+    Shrink,
 } from "lucide-react";
-import { CadModelViewer } from "@/components/cad-model-viewer";
-import { DesignCanvas } from "@/components/design-canvas";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "@/components/ui/use-toast";
+import { CadModelViewer } from "@/components/cad-model-viewer";
+import { InputPanel } from "@/components/input-panel";
 
 export default function CadGeneratorPage() {
     const [prompt, setPrompt] = useState("");
@@ -42,7 +46,6 @@ export default function CadGeneratorPage() {
     const [generatedModel, setGeneratedModel] = useState<any>(null);
     const [generatedCode, setGeneratedCode] = useState("");
     const [activeTab, setActiveTab] = useState("visual");
-    const [inputMode, setInputMode] = useState<"text" | "sketch">("text");
     const [copied, setCopied] = useState(false);
     const [viewerSettings, setViewerSettings] = useState({
         showGrid: true,
@@ -61,8 +64,33 @@ export default function CadGeneratorPage() {
         model: "pending",
     });
 
+    // Layout state
+    const [layoutMode, setLayoutMode] = useState<
+        "horizontal" | "vertical" | "input-focus" | "viewer-focus"
+    >("horizontal");
+    const [inputPanelSize, setInputPanelSize] = useState(40); // percentage
+    const [isResizing, setIsResizing] = useState(false);
+    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+    const resizeStartRef = useRef<{
+        position: number;
+        startSize: number;
+    } | null>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+
     const codeRef = useRef<HTMLPreElement>(null);
-    const canvasRef = useRef<any>(null);
+
+    // Effect to handle window resize during dragging
+    useEffect(() => {
+        const handleWindowResize = () => {
+            if (isResizing) {
+                setIsResizing(false);
+                resizeStartRef.current = null;
+            }
+        };
+
+        window.addEventListener("resize", handleWindowResize);
+        return () => window.removeEventListener("resize", handleWindowResize);
+    }, [isResizing]);
 
     // Function to update processing steps
     const updateProcessingStep = (
@@ -75,27 +103,7 @@ export default function CadGeneratorPage() {
         }));
     };
 
-    // Function to capture sketch data
-    const captureSketchData = () => {
-        if (!canvasRef.current) return null;
-
-        try {
-            // Get canvas element from the DesignCanvas component
-            const canvasElement = canvasRef.current.getCanvasElement();
-            if (!canvasElement) {
-                console.warn("Canvas element not available");
-                return null;
-            }
-
-            // Convert canvas to data URL
-            return canvasElement.toDataURL("image/png");
-        } catch (error) {
-            console.error("Error capturing sketch data:", error);
-            return null;
-        }
-    };
-
-    const handleGenerate = async () => {
+    const handleGenerate = async (inputs) => {
         // Reset processing steps
         setProcessingSteps({
             sketch: "pending",
@@ -107,47 +115,54 @@ export default function CadGeneratorPage() {
         setIsGenerating(true);
 
         try {
-            // Capture sketch data if in sketch mode
-            updateProcessingStep("sketch", "processing");
-            const sketchData =
-                inputMode === "sketch" ? captureSketchData() : null;
+            // Extract inputs from the InputPanel component
+            const { prompt, sketchData, speechData, photoData } = inputs;
 
-            // Mark sketch processing as complete
-            if (inputMode === "sketch") {
+            // Update prompt state for consistency with other parts of the app
+            setPrompt(prompt || "");
+
+            // Mark sketch processing as complete if not using sketch
+            if (!sketchData) {
+                updateProcessingStep("sketch", "completed");
+            } else {
+                // Mark sketch processing as active then complete
+                updateProcessingStep("sketch", "processing");
                 setTimeout(
                     () => updateProcessingStep("sketch", "completed"),
                     500
                 );
-            } else {
-                updateProcessingStep("sketch", "completed");
             }
 
             // Prepare request payload - matches Azure API expectations
             const payload = {};
 
-            // Always include a prompt - use default if in sketch-only mode
-            if (inputMode === "text" && prompt.trim()) {
-                payload.prompt = prompt.trim();
-            } else if (inputMode === "sketch") {
-                // For sketch-only mode, send a default prompt
-                payload.prompt = "Generate a CAD model based on this sketch";
+            // Always include a prompt
+            if (prompt) {
+                payload.prompt = prompt;
+            } else if (speechData) {
+                payload.prompt = speechData;
             } else {
-                throw new Error(
-                    "No input provided. Please enter a text description or create a sketch."
-                );
+                // For sketch-only or photo-only mode, send a default prompt
+                payload.prompt = "Generate a CAD model based on this input";
             }
 
             // Add sketch data if available
             if (sketchData) {
                 payload.sketchData = sketchData;
-                // When using sketch, mark vision processing as active
+            }
+
+            // Add photo data if available
+            if (photoData) {
+                payload.photoData = photoData;
+                // When using photo, mark vision processing as active
                 updateProcessingStep("vision", "processing");
             }
 
             console.log("Generating CAD model with Azure services:", {
-                inputMode,
                 hasPrompt: !!payload.prompt,
                 hasSketchData: !!payload.sketchData,
+                hasPhotoData: !!payload.photoData,
+                hasSpeechData: !!speechData,
             });
 
             // Mark OpenAI processing as active
@@ -162,8 +177,8 @@ export default function CadGeneratorPage() {
                 body: JSON.stringify(payload),
             });
 
-            // If sketch was provided, mark vision processing as complete
-            if (sketchData) {
+            // If sketch or photo was provided, mark vision processing as complete
+            if (sketchData || photoData) {
                 updateProcessingStep("vision", "completed");
             }
 
@@ -214,6 +229,11 @@ export default function CadGeneratorPage() {
             setGeneratedCode(data.code);
             setActiveTab("visual");
 
+            // If we're in input-focus mode, switch to viewer-focus after generation
+            if (layoutMode === "input-focus") {
+                setLayoutMode("viewer-focus");
+            }
+
             toast({
                 title: "Model generated successfully",
                 description: "Your CAD model has been created using Azure AI.",
@@ -234,9 +254,9 @@ export default function CadGeneratorPage() {
             // Fallback to mock data if Azure API fails
             const mockResponse = {
                 modelData: generateMockModelData(
-                    prompt || "Floor plan from sketch"
+                    prompt || "Floor plan from input"
                 ),
-                code: generateMockCode(prompt || "Floor plan from sketch"),
+                code: generateMockCode(prompt || "Floor plan from input"),
             };
 
             setGeneratedModel(mockResponse.modelData);
@@ -253,6 +273,7 @@ export default function CadGeneratorPage() {
             setIsGenerating(false);
         }
     };
+
     const handleCopyCode = () => {
         navigator.clipboard.writeText(generatedCode);
         setCopied(true);
@@ -490,821 +511,880 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 });`;
     };
 
-    const examplePrompts = [
-        "Design a modern single-story house with an open floor plan, 3 bedrooms, 2 bathrooms, and a large kitchen island.",
-        "Create an office space with 5 private offices, a conference room, open workspace, and a kitchen area.",
-        "Generate a small retail store layout with display areas, fitting rooms, checkout counter, and storage room.",
-        "Design a restaurant with seating for 60 people, a bar area, kitchen, and restrooms.",
-    ];
+    // Resize handlers
+    const handleResizeStart = (e) => {
+        e.preventDefault();
 
-    // Azure Services Info Component
-    const AzureServicesInfo = () => {
-        return (
-            <Card>
-                <CardContent className="p-6 space-y-4">
-                    <div className="flex items-center gap-2">
-                        <div className="bg-blue-100 p-2 rounded-md">
-                            <svg
-                                className="h-6 w-6 text-blue-700"
-                                viewBox="0 0 24 24"
-                                fill="currentColor"
-                            >
-                                <path d="M12.266 22.5c5.283-.024 9.653-4.268 9.727-9.523-.499.044-1.385.099-2.293.099-5.729 0-10.531-4.097-11.6-9.55-.151.775-.273 1.57-.273 2.385 0 4.241 2.341 7.936 5.795 9.892L4.52 9.77l-1.553 3.106A9.939 9.939 0 0 0 2.25 12c0-5.799 4.701-10.5 10.5-10.5S23.25 6.201 23.25 12s-4.701 10.5-10.5 10.5c-.16 0-.316-.012-.475-.02l-.009.02z" />
-                            </svg>
-                        </div>
-                        <h2 className="text-lg font-semibold">
-                            Azure AI Services
-                        </h2>
-                    </div>
+        let position;
+        if (layoutMode === "horizontal") {
+            position = e.clientX;
+        } else {
+            position = e.clientY;
+        }
 
-                    <div className="space-y-3 text-sm">
-                        <div className="flex items-start gap-3">
-                            <div className="bg-blue-50 p-1 rounded">
-                                <svg
-                                    className="h-5 w-5 text-blue-600"
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                >
-                                    <path d="M7.5 6.75V0h9v6.75h-9zm9 3.75V24h-9V10.5h9zM0 10.5V3.75h6.75V10.5H0zm0 10.5v-6.75h6.75V21H0zm16.5-10.5V3.75h6.75V10.5h-6.75zm0 10.5v-6.75h6.75V21h-6.75z" />
-                                </svg>
-                            </div>
-                            <div>
-                                <p className="font-medium">
-                                    Azure OpenAI Service
-                                </p>
-                                <p className="text-muted-foreground">
-                                    Powers the natural language understanding
-                                    and 3D model generation
-                                </p>
-                            </div>
-                        </div>
+        resizeStartRef.current = {
+            position,
+            startSize: inputPanelSize,
+        };
 
-                        <div className="flex items-start gap-3">
-                            <div className="bg-blue-50 p-1 rounded">
-                                <svg
-                                    className="h-5 w-5 text-blue-600"
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                >
-                                    <path d="M6.79 5.093A9.002 9.002 0 0 0 12 21a9 9 0 0 0 8.942-8.138A2.25 2.25 0 1 0 18 10.5h-2.25a2.25 2.25 0 0 0-2.25 2.25c0 .601.236 1.148.621 1.552A5.988 5.988 0 0 1 12 15a6 6 0 0 1-5.604-8.178l.493.099a1.35 1.35 0 0 0 1.558-.99 1.35 1.35 0 0 0-.99-1.558l-2.277-.456a1.35 1.35 0 0 0-1.558.99l-.456 2.277a1.35 1.35 0 0 0 2.634.558l.099-.493Z" />
-                                    <path d="M10.5 14.25A2.25 2.25 0 0 0 12 12v2.25l-1.5 1.5Z" />
-                                </svg>
-                            </div>
-                            <div>
-                                <p className="font-medium">
-                                    Azure Computer Vision
-                                </p>
-                                <p className="text-muted-foreground">
-                                    Analyzes sketch inputs and extracts spatial
-                                    information
-                                </p>
-                            </div>
-                        </div>
+        setIsResizing(true);
 
-                        <div className="flex items-start gap-3">
-                            <div className="bg-blue-50 p-1 rounded">
-                                <svg
-                                    className="h-5 w-5 text-blue-600"
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                >
-                                    <path d="M4.5 3.75a3 3 0 00-3 3v.75h21v-.75a3 3 0 00-3-3h-15z" />
-                                    <path
-                                        fillRule="evenodd"
-                                        d="M22.5 9.75h-21v7.5a3 3 0 003 3h15a3 3 0 003-3v-7.5zm-18 3.75a.75.75 0 01.75-.75h6a.75.75 0 010 1.5h-6a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5h3a.75.75 0 000-1.5h-3z"
-                                        clipRule="evenodd"
-                                    />
-                                </svg>
-                            </div>
-                            <div>
-                                <p className="font-medium">Azure Functions</p>
-                                <p className="text-muted-foreground">
-                                    Orchestrates the multi-agent AI system
-                                    workflow
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="text-xs text-muted-foreground pt-2 border-t">
-                        <p>
-                            This application leverages Azure's AI services to
-                            transform your input into architectural designs.
-                        </p>
-                    </div>
-                </CardContent>
-            </Card>
-        );
+        document.addEventListener("mousemove", handleResizeMove);
+        document.addEventListener("mouseup", handleResizeEnd);
     };
 
-    return (
-        <div className="container mx-auto py-6">
-            <div className="flex flex-col space-y-6">
-                <div>
-                    <h1 className="text-3xl font-bold tracking-tight">
-                        CAD Model Generator
-                    </h1>
-                    <p className="text-muted-foreground mt-1">
-                        Generate 3D CAD models from text descriptions or
-                        sketches using AI
-                    </p>
-                </div>
+    const handleResizeMove = (e) => {
+        if (!isResizing || !resizeStartRef.current || !containerRef.current)
+            return;
 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-1 space-y-6">
-                        <Card>
-                            <CardContent className="p-6 space-y-4">
-                                <div className="flex justify-between items-center">
-                                    <h2 className="text-lg font-semibold">
-                                        Input Method
-                                    </h2>
-                                    <div className="flex space-x-2">
-                                        <Button
-                                            onClick={() => setInputMode("text")}
-                                            variant={
-                                                inputMode === "text"
-                                                    ? "default"
-                                                    : "outline"
-                                            }
-                                            size="sm"
-                                            className="gap-1"
-                                        >
-                                            <Wand2 className="h-4 w-4" />
-                                            Text
-                                        </Button>
-                                        <Button
-                                            onClick={() =>
-                                                setInputMode("sketch")
-                                            }
-                                            variant={
-                                                inputMode === "sketch"
-                                                    ? "default"
-                                                    : "outline"
-                                            }
-                                            size="sm"
-                                            className="gap-1"
-                                        >
-                                            <Pencil className="h-4 w-4" />
-                                            Sketch
-                                        </Button>
-                                    </div>
-                                </div>
+        const containerRect = containerRef.current.getBoundingClientRect();
+        let newSize;
 
-                                {inputMode === "text" ? (
-                                    <>
-                                        <div className="space-y-2">
-                                            <Label htmlFor="prompt">
-                                                Text Prompt
-                                            </Label>
-                                            <Textarea
-                                                id="prompt"
-                                                placeholder="Describe your building or space in detail..."
-                                                className="min-h-[200px] resize-none"
-                                                value={prompt}
-                                                onChange={(e) =>
-                                                    setPrompt(e.target.value)
-                                                }
-                                            />
-                                        </div>
+        if (layoutMode === "horizontal") {
+            const containerWidth = containerRect.width;
+            const diff = e.clientX - resizeStartRef.current.position;
+            const diffPercent = (diff / containerWidth) * 100;
+            newSize = Math.min(
+                80,
+                Math.max(20, resizeStartRef.current.startSize + diffPercent)
+            );
+        } else {
+            const containerHeight = containerRect.height;
+            const diff = e.clientY - resizeStartRef.current.position;
+            const diffPercent = (diff / containerHeight) * 100;
+            newSize = Math.min(
+                80,
+                Math.max(20, resizeStartRef.current.startSize + diffPercent)
+            );
+        }
 
-                                        <div className="space-y-2">
-                                            <Label>Example Prompts</Label>
-                                            <div className="space-y-2">
-                                                {examplePrompts.map(
-                                                    (example, index) => (
-                                                        <div
-                                                            key={index}
-                                                            className="text-sm p-2 border rounded-md cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
-                                                            onClick={() =>
-                                                                setPrompt(
-                                                                    example
-                                                                )
-                                                            }
-                                                        >
-                                                            {example}
-                                                        </div>
-                                                    )
-                                                )}
-                                            </div>
-                                        </div>
-                                    </>
-                                ) : (
-                                    <div className="space-y-2">
-                                        <Label>Sketch Your Design</Label>
-                                        <div className="border rounded-md overflow-hidden bg-white h-[300px]">
-                                            <DesignCanvas
-                                                projectId="cad-generator"
-                                                ref={canvasRef}
-                                            />
-                                        </div>
-                                        <p className="text-sm text-muted-foreground">
-                                            Draw a floor plan or sketch of your
-                                            design. Use the tools above to
-                                            create your sketch.
-                                        </p>
-                                    </div>
-                                )}
+        setInputPanelSize(newSize);
+    };
 
-                                <Button
-                                    className="w-full gap-2"
-                                    onClick={handleGenerate}
-                                    disabled={
-                                        isGenerating ||
-                                        (inputMode === "text" && !prompt.trim())
-                                    }
-                                >
-                                    {isGenerating ? (
-                                        <>
-                                            <Loader2 className="h-4 w-4 animate-spin" />
-                                            Generating...
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Wand2 className="h-4 w-4" />
-                                            Generate CAD Model
-                                        </>
-                                    )}
-                                </Button>
+    const handleResizeEnd = () => {
+        setIsResizing(false);
+        resizeStartRef.current = null;
 
-                                {isGenerating && (
-                                    <div className="mt-4 border rounded-md p-3 bg-muted/30">
-                                        <h3 className="text-sm font-medium mb-2">
-                                            Azure AI Processing
-                                        </h3>
-                                        <div className="space-y-2">
-                                            <div className="flex justify-between items-center">
-                                                <span className="text-xs">
-                                                    {inputMode === "sketch"
-                                                        ? "Computer Vision Analysis"
-                                                        : "Input Processing"}
-                                                </span>
-                                                <div className="flex items-center">
-                                                    {processingSteps.sketch ===
-                                                        "pending" && (
-                                                        <span className="text-xs text-muted-foreground">
-                                                            Waiting
-                                                        </span>
-                                                    )}
-                                                    {processingSteps.sketch ===
-                                                        "processing" && (
-                                                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                                                    )}
-                                                    {processingSteps.sketch ===
-                                                        "completed" && (
-                                                        <Check className="h-3 w-3 text-green-500" />
-                                                    )}
-                                                    {processingSteps.sketch ===
-                                                        "error" && (
-                                                        <span className="text-xs text-destructive">
-                                                            Error
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            </div>
+        document.removeEventListener("mousemove", handleResizeMove);
+        document.removeEventListener("mouseup", handleResizeEnd);
+    };
 
-                                            <div className="flex justify-between items-center">
-                                                <span className="text-xs">
-                                                    Azure OpenAI Processing
-                                                </span>
-                                                <div className="flex items-center">
-                                                    {processingSteps.openai ===
-                                                        "pending" && (
-                                                        <span className="text-xs text-muted-foreground">
-                                                            Waiting
-                                                        </span>
-                                                    )}
-                                                    {processingSteps.openai ===
-                                                        "processing" && (
-                                                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                                                    )}
-                                                    {processingSteps.openai ===
-                                                        "completed" && (
-                                                        <Check className="h-3 w-3 text-green-500" />
-                                                    )}
-                                                    {processingSteps.openai ===
-                                                        "error" && (
-                                                        <span className="text-xs text-destructive">
-                                                            Error
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            </div>
+    // Layout mode handlers
+    const toggleLayoutMode = () => {
+        setLayoutMode(layoutMode === "horizontal" ? "vertical" : "horizontal");
+    };
 
-                                            <div className="flex justify-between items-center">
-                                                <span className="text-xs">
-                                                    3D Model Generation
-                                                </span>
-                                                <div className="flex items-center">
-                                                    {processingSteps.model ===
-                                                        "pending" && (
-                                                        <span className="text-xs text-muted-foreground">
-                                                            Waiting
-                                                        </span>
-                                                    )}
-                                                    {processingSteps.model ===
-                                                        "processing" && (
-                                                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                                                    )}
-                                                    {processingSteps.model ===
-                                                        "completed" && (
-                                                        <Check className="h-3 w-3 text-green-500" />
-                                                    )}
-                                                    {processingSteps.model ===
-                                                        "error" && (
-                                                        <span className="text-xs text-destructive">
-                                                            Error
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-                            </CardContent>
-                        </Card>
+    const toggleSidebar = () => {
+        setIsSidebarCollapsed(!isSidebarCollapsed);
+    };
 
-                        {generatedModel && (
-                            <Card>
-                                <CardContent className="p-6 space-y-4">
-                                    <div className="space-y-2">
-                                        <Label>Visualization Settings</Label>
-
-                                        <div className="flex items-center justify-between">
-                                            <Label
-                                                htmlFor="show-grid"
-                                                className="cursor-pointer"
-                                            >
-                                                Show Grid
-                                            </Label>
-                                            <Switch
-                                                id="show-grid"
-                                                checked={
-                                                    viewerSettings.showGrid
-                                                }
-                                                onCheckedChange={(checked) =>
-                                                    setViewerSettings(
-                                                        (prev) => ({
-                                                            ...prev,
-                                                            showGrid: checked,
-                                                        })
-                                                    )
-                                                }
-                                            />
-                                        </div>
-
-                                        <div className="flex items-center justify-between">
-                                            <Label
-                                                htmlFor="show-axes"
-                                                className="cursor-pointer"
-                                            >
-                                                Show Axes
-                                            </Label>
-                                            <Switch
-                                                id="show-axes"
-                                                checked={
-                                                    viewerSettings.showAxes
-                                                }
-                                                onCheckedChange={(checked) =>
-                                                    setViewerSettings(
-                                                        (prev) => ({
-                                                            ...prev,
-                                                            showAxes: checked,
-                                                        })
-                                                    )
-                                                }
-                                            />
-                                        </div>
-
-                                        <div className="flex items-center justify-between">
-                                            <Label
-                                                htmlFor="wireframe"
-                                                className="cursor-pointer"
-                                            >
-                                                Wireframe Mode
-                                            </Label>
-                                            <Switch
-                                                id="wireframe"
-                                                checked={
-                                                    viewerSettings.wireframe
-                                                }
-                                                onCheckedChange={(checked) =>
-                                                    setViewerSettings(
-                                                        (prev) => ({
-                                                            ...prev,
-                                                            wireframe: checked,
-                                                        })
-                                                    )
-                                                }
-                                            />
-                                        </div>
-
-                                        <Separator className="my-2" />
-
-                                        <div className="space-y-2">
-                                            <Label>Background Color</Label>
-                                            <Select
-                                                value={
-                                                    viewerSettings.backgroundColor
-                                                }
-                                                onValueChange={(value) =>
-                                                    setViewerSettings(
-                                                        (prev) => ({
-                                                            ...prev,
-                                                            backgroundColor:
-                                                                value,
-                                                        })
-                                                    )
-                                                }
-                                            >
-                                                <SelectTrigger>
-                                                    <SelectValue placeholder="Select background color" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="#f0f0f0">
-                                                        Light Gray
-                                                    </SelectItem>
-                                                    <SelectItem value="#ffffff">
-                                                        White
-                                                    </SelectItem>
-                                                    <SelectItem value="#000000">
-                                                        Black
-                                                    </SelectItem>
-                                                    <SelectItem value="#e6f7ff">
-                                                        Sky Blue
-                                                    </SelectItem>
-                                                    <SelectItem value="#f0f9e8">
-                                                        Mint Green
-                                                    </SelectItem>
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-
-                                        <div className="space-y-2">
-                                            <Label>Lighting</Label>
-                                            <div className="grid grid-cols-4 gap-2">
-                                                <Button
-                                                    variant={
-                                                        viewerSettings.lighting ===
-                                                        "morning"
-                                                            ? "default"
-                                                            : "outline"
-                                                    }
-                                                    size="icon"
-                                                    onClick={() =>
-                                                        setViewerSettings(
-                                                            (prev) => ({
-                                                                ...prev,
-                                                                lighting:
-                                                                    "morning",
-                                                            })
-                                                        )
-                                                    }
-                                                    title="Morning Light"
-                                                >
-                                                    <Sunrise className="h-4 w-4" />
-                                                </Button>
-                                                <Button
-                                                    variant={
-                                                        viewerSettings.lighting ===
-                                                        "day"
-                                                            ? "default"
-                                                            : "outline"
-                                                    }
-                                                    size="icon"
-                                                    onClick={() =>
-                                                        setViewerSettings(
-                                                            (prev) => ({
-                                                                ...prev,
-                                                                lighting: "day",
-                                                            })
-                                                        )
-                                                    }
-                                                    title="Day Light"
-                                                >
-                                                    <Sun className="h-4 w-4" />
-                                                </Button>
-                                                <Button
-                                                    variant={
-                                                        viewerSettings.lighting ===
-                                                        "evening"
-                                                            ? "default"
-                                                            : "outline"
-                                                    }
-                                                    size="icon"
-                                                    onClick={() =>
-                                                        setViewerSettings(
-                                                            (prev) => ({
-                                                                ...prev,
-                                                                lighting:
-                                                                    "evening",
-                                                            })
-                                                        )
-                                                    }
-                                                    title="Evening Light"
-                                                >
-                                                    <Sunset className="h-4 w-4" />
-                                                </Button>
-                                                <Button
-                                                    variant={
-                                                        viewerSettings.lighting ===
-                                                        "night"
-                                                            ? "default"
-                                                            : "outline"
-                                                    }
-                                                    size="icon"
-                                                    onClick={() =>
-                                                        setViewerSettings(
-                                                            (prev) => ({
-                                                                ...prev,
-                                                                lighting:
-                                                                    "night",
-                                                            })
-                                                        )
-                                                    }
-                                                    title="Night Light"
-                                                >
-                                                    <Moon className="h-4 w-4" />
-                                                </Button>
-                                            </div>
-                                        </div>
-
-                                        <Separator className="my-2" />
-
-                                        <div className="space-y-2">
-                                            <div className="flex justify-between">
-                                                <Label>Zoom Level</Label>
-                                                <span className="text-sm">
-                                                    {viewerSettings.zoom.toFixed(
-                                                        1
-                                                    )}
-                                                    x
-                                                </span>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <Button
-                                                    variant="outline"
-                                                    size="icon"
-                                                    onClick={() =>
-                                                        handleZoom("out")
-                                                    }
-                                                    disabled={
-                                                        viewerSettings.zoom <=
-                                                        0.5
-                                                    }
-                                                >
-                                                    <ZoomOut className="h-4 w-4" />
-                                                </Button>
-                                                <Slider
-                                                    value={[
-                                                        viewerSettings.zoom,
-                                                    ]}
-                                                    min={0.5}
-                                                    max={3}
-                                                    step={0.1}
-                                                    onValueChange={(value) =>
-                                                        setViewerSettings(
-                                                            (prev) => ({
-                                                                ...prev,
-                                                                zoom: value[0],
-                                                            })
-                                                        )
-                                                    }
-                                                />
-                                                <Button
-                                                    variant="outline"
-                                                    size="icon"
-                                                    onClick={() =>
-                                                        handleZoom("in")
-                                                    }
-                                                    disabled={
-                                                        viewerSettings.zoom >= 3
-                                                    }
-                                                >
-                                                    <ZoomIn className="h-4 w-4" />
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </CardContent>
-                            </Card>
-                        )}
-
-                        <AzureServicesInfo />
+    // Processing status component
+    const ProcessingStatus = () => (
+        <Card className="mt-4">
+            <CardHeader className="py-3">
+                <CardTitle className="text-sm font-medium">
+                    Processing Status
+                </CardTitle>
+            </CardHeader>
+            <CardContent className="py-2 px-4">
+                <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                        <span className="text-xs">Input Processing</span>
+                        <div className="flex items-center">
+                            {processingSteps.sketch === "pending" && (
+                                <span className="text-xs text-muted-foreground">
+                                    Waiting
+                                </span>
+                            )}
+                            {processingSteps.sketch === "processing" && (
+                                <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                            )}
+                            {processingSteps.sketch === "completed" && (
+                                <Check className="h-3 w-3 text-green-500" />
+                            )}
+                            {processingSteps.sketch === "error" && (
+                                <span className="text-xs text-destructive">
+                                    Error
+                                </span>
+                            )}
+                        </div>
                     </div>
 
-                    <div className="lg:col-span-2">
-                        <Card className="h-full flex flex-col">
-                            <CardContent className="p-0 flex-1">
-                                <Tabs
-                                    value={activeTab}
-                                    onValueChange={setActiveTab}
-                                    className="w-full h-full flex flex-col"
-                                >
-                                    <div className="flex justify-between items-center p-4 border-b">
-                                        <h2 className="text-lg font-semibold">
-                                            Generated Model
-                                        </h2>
-                                        <TabsList>
-                                            <TabsTrigger value="visual">
-                                                Visual
-                                            </TabsTrigger>
-                                            <TabsTrigger value="code">
-                                                Code
-                                            </TabsTrigger>
-                                            <TabsTrigger value="json">
-                                                JSON
-                                            </TabsTrigger>
-                                        </TabsList>
-                                    </div>
+                    <div className="flex justify-between items-center">
+                        <span className="text-xs">
+                            Computer Vision Analysis
+                        </span>
+                        <div className="flex items-center">
+                            {processingSteps.vision === "pending" && (
+                                <span className="text-xs text-muted-foreground">
+                                    Waiting
+                                </span>
+                            )}
+                            {processingSteps.vision === "processing" && (
+                                <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                            )}
+                            {processingSteps.vision === "completed" && (
+                                <Check className="h-3 w-3 text-green-500" />
+                            )}
+                            {processingSteps.vision === "error" && (
+                                <span className="text-xs text-destructive">
+                                    Error
+                                </span>
+                            )}
+                        </div>
+                    </div>
 
-                                    <div className="flex-1 overflow-hidden">
-                                        <TabsContent
-                                            value="visual"
-                                            className="h-full m-0 p-0"
-                                        >
-                                            {generatedModel ? (
-                                                <div className="relative h-[700px]">
-                                                    <CadModelViewer
-                                                        modelData={
-                                                            generatedModel
-                                                        }
-                                                        settings={
-                                                            viewerSettings
-                                                        }
-                                                    />
+                    <div className="flex justify-between items-center">
+                        <span className="text-xs">Azure OpenAI Processing</span>
+                        <div className="flex items-center">
+                            {processingSteps.openai === "pending" && (
+                                <span className="text-xs text-muted-foreground">
+                                    Waiting
+                                </span>
+                            )}
+                            {processingSteps.openai === "processing" && (
+                                <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                            )}
+                            {processingSteps.openai === "completed" && (
+                                <Check className="h-3 w-3 text-green-500" />
+                            )}
+                            {processingSteps.openai === "error" && (
+                                <span className="text-xs text-destructive">
+                                    Error
+                                </span>
+                            )}
+                        </div>
+                    </div>
 
-                                                    <div className="absolute bottom-4 right-4 flex space-x-2">
-                                                        <Button
-                                                            variant="secondary"
-                                                            size="sm"
-                                                            className="gap-2 bg-background/80 backdrop-blur-sm hover:bg-background/90"
-                                                            onClick={() =>
-                                                                handleSaveModel(
-                                                                    "gltf"
+                    <div className="flex justify-between items-center">
+                        <span className="text-xs">3D Model Generation</span>
+                        <div className="flex items-center">
+                            {processingSteps.model === "pending" && (
+                                <span className="text-xs text-muted-foreground">
+                                    Waiting
+                                </span>
+                            )}
+                            {processingSteps.model === "processing" && (
+                                <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                            )}
+                            {processingSteps.model === "completed" && (
+                                <Check className="h-3 w-3 text-green-500" />
+                            )}
+                            {processingSteps.model === "error" && (
+                                <span className="text-xs text-destructive">
+                                    Error
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </CardContent>
+        </Card>
+    );
+
+    // Viewer settings component
+    const ViewerSettings = () => (
+        <Card className="mt-4">
+            <CardHeader className="py-3">
+                <CardTitle className="text-sm font-medium">
+                    Visualization Settings
+                </CardTitle>
+            </CardHeader>
+            <CardContent className="py-2 px-4">
+                <div className="space-y-4">
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                            <Label
+                                htmlFor="show-grid"
+                                className="cursor-pointer text-xs"
+                            >
+                                Show Grid
+                            </Label>
+                            <Switch
+                                id="show-grid"
+                                checked={viewerSettings.showGrid}
+                                onCheckedChange={(checked) =>
+                                    setViewerSettings((prev) => ({
+                                        ...prev,
+                                        showGrid: checked,
+                                    }))
+                                }
+                            />
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                            <Label
+                                htmlFor="show-axes"
+                                className="cursor-pointer text-xs"
+                            >
+                                Show Axes
+                            </Label>
+                            <Switch
+                                id="show-axes"
+                                checked={viewerSettings.showAxes}
+                                onCheckedChange={(checked) =>
+                                    setViewerSettings((prev) => ({
+                                        ...prev,
+                                        showAxes: checked,
+                                    }))
+                                }
+                            />
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                            <Label
+                                htmlFor="wireframe"
+                                className="cursor-pointer text-xs"
+                            >
+                                Wireframe Mode
+                            </Label>
+                            <Switch
+                                id="wireframe"
+                                checked={viewerSettings.wireframe}
+                                onCheckedChange={(checked) =>
+                                    setViewerSettings((prev) => ({
+                                        ...prev,
+                                        wireframe: checked,
+                                    }))
+                                }
+                            />
+                        </div>
+                    </div>
+
+                    <Separator className="my-2" />
+
+                    <div className="space-y-2">
+                        <Label className="text-xs">Background Color</Label>
+                        <Select
+                            value={viewerSettings.backgroundColor}
+                            onValueChange={(value) =>
+                                setViewerSettings((prev) => ({
+                                    ...prev,
+                                    backgroundColor: value,
+                                }))
+                            }
+                        >
+                            <SelectTrigger className="h-8">
+                                <SelectValue placeholder="Select background color" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="#f0f0f0">
+                                    Light Gray
+                                </SelectItem>
+                                <SelectItem value="#ffffff">White</SelectItem>
+                                <SelectItem value="#000000">Black</SelectItem>
+                                <SelectItem value="#e6f7ff">
+                                    Sky Blue
+                                </SelectItem>
+                                <SelectItem value="#f0f9e8">
+                                    Mint Green
+                                </SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                        <Label className="text-xs">Lighting</Label>
+                        <div className="grid grid-cols-4 gap-2">
+                            <Button
+                                variant={
+                                    viewerSettings.lighting === "morning"
+                                        ? "default"
+                                        : "outline"
+                                }
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() =>
+                                    setViewerSettings((prev) => ({
+                                        ...prev,
+                                        lighting: "morning",
+                                    }))
+                                }
+                                title="Morning Light"
+                            >
+                                <Sunrise className="h-4 w-4" />
+                            </Button>
+                            <Button
+                                variant={
+                                    viewerSettings.lighting === "day"
+                                        ? "default"
+                                        : "outline"
+                                }
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() =>
+                                    setViewerSettings((prev) => ({
+                                        ...prev,
+                                        lighting: "day",
+                                    }))
+                                }
+                                title="Day Light"
+                            >
+                                <Sun className="h-4 w-4" />
+                            </Button>
+                            <Button
+                                variant={
+                                    viewerSettings.lighting === "evening"
+                                        ? "default"
+                                        : "outline"
+                                }
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() =>
+                                    setViewerSettings((prev) => ({
+                                        ...prev,
+                                        lighting: "evening",
+                                    }))
+                                }
+                                title="Evening Light"
+                            >
+                                <Sunset className="h-4 w-4" />
+                            </Button>
+                            <Button
+                                variant={
+                                    viewerSettings.lighting === "night"
+                                        ? "default"
+                                        : "outline"
+                                }
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() =>
+                                    setViewerSettings((prev) => ({
+                                        ...prev,
+                                        lighting: "night",
+                                    }))
+                                }
+                                title="Night Light"
+                            >
+                                <Moon className="h-4 w-4" />
+                            </Button>
+                        </div>
+                    </div>
+
+                    <Separator className="my-2" />
+
+                    <div className="space-y-2">
+                        <div className="flex justify-between">
+                            <Label className="text-xs">Zoom Level</Label>
+                            <span className="text-xs">
+                                {viewerSettings.zoom.toFixed(1)}x
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                variant="outline"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => handleZoom("out")}
+                                disabled={viewerSettings.zoom <= 0.5}
+                            >
+                                <ZoomOut className="h-3.5 w-3.5" />
+                            </Button>
+                            <Slider
+                                value={[viewerSettings.zoom]}
+                                min={0.5}
+                                max={3}
+                                step={0.1}
+                                onValueChange={(value) =>
+                                    setViewerSettings((prev) => ({
+                                        ...prev,
+                                        zoom: value[0],
+                                    }))
+                                }
+                            />
+                            <Button
+                                variant="outline"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => handleZoom("in")}
+                                disabled={viewerSettings.zoom >= 3}
+                            >
+                                <ZoomIn className="h-3.5 w-3.5" />
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            </CardContent>
+        </Card>
+    );
+
+    // Layout toolbar
+    const LayoutToolbar = () => (
+        <div className="flex items-center justify-between mb-4 bg-muted/40 rounded-lg p-2">
+            <div className="flex items-center gap-2">
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    className={`h-8 px-2 ${
+                        layoutMode === "horizontal" ? "bg-muted" : ""
+                    }`}
+                    onClick={() => setLayoutMode("horizontal")}
+                    title="Horizontal Split"
+                >
+                    <LayoutPanelLeft className="h-4 w-4 mr-1" />
+                    <span className="text-xs">Horizontal</span>
+                </Button>
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    className={`h-8 px-2 ${
+                        layoutMode === "vertical" ? "bg-muted" : ""
+                    }`}
+                    onClick={() => setLayoutMode("vertical")}
+                    title="Vertical Split"
+                >
+                    <LayoutPanelTop className="h-4 w-4 mr-1" />
+                    <span className="text-xs">Vertical</span>
+                </Button>
+                <Separator orientation="vertical" className="h-6 mx-1" />
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    className={`h-8 px-2 ${
+                        layoutMode === "input-focus" ? "bg-muted" : ""
+                    }`}
+                    onClick={() => setLayoutMode("input-focus")}
+                    title="Focus on Input"
+                >
+                    <Shrink className="h-4 w-4 mr-1" />
+                    <span className="text-xs">Input Focus</span>
+                </Button>
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    className={`h-8 px-2 ${
+                        layoutMode === "viewer-focus" ? "bg-muted" : ""
+                    }`}
+                    onClick={() => setLayoutMode("viewer-focus")}
+                    title="Focus on Viewer"
+                >
+                    <Expand className="h-4 w-4 mr-1" />
+                    <span className="text-xs">Viewer Focus</span>
+                </Button>
+            </div>
+            <div className="flex items-center gap-2">
+                <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8"
+                    onClick={() => {
+                        if (document.fullscreenElement) {
+                            document.exitFullscreen();
+                        } else {
+                            document.documentElement.requestFullscreen();
+                        }
+                    }}
+                >
+                    <Maximize2 className="h-4 w-4 mr-1" />
+                    <span className="text-xs">Fullscreen</span>
+                </Button>
+            </div>
+        </div>
+    );
+
+    // Determine layout classes based on mode
+    const getLayoutClasses = () => {
+        switch (layoutMode) {
+            case "horizontal":
+                return {
+                    container:
+                        "flex flex-col lg:flex-row h-[calc(100vh-10rem)]",
+                    inputPanel: `lg:w-[${inputPanelSize}%] flex-shrink-0`,
+                    resizer:
+                        "hidden lg:flex w-2 cursor-col-resize hover:bg-accent/50 active:bg-accent",
+                    viewerPanel: `lg:w-[${100 - inputPanelSize}%] flex-grow`,
+                };
+            case "vertical":
+                return {
+                    container: "flex flex-col h-[calc(100vh-10rem)]",
+                    inputPanel: `h-[${inputPanelSize}%] flex-shrink-0`,
+                    resizer:
+                        "h-2 cursor-row-resize hover:bg-accent/50 active:bg-accent",
+                    viewerPanel: `h-[${100 - inputPanelSize}%] flex-grow`,
+                };
+            case "input-focus":
+                return {
+                    container: "flex flex-col h-[calc(100vh-10rem)]",
+                    inputPanel: "h-full flex-grow",
+                    resizer: "hidden",
+                    viewerPanel: "hidden",
+                };
+            case "viewer-focus":
+                return {
+                    container: "flex flex-col h-[calc(100vh-10rem)]",
+                    inputPanel: "hidden",
+                    resizer: "hidden",
+                    viewerPanel: "h-full flex-grow",
+                };
+            default:
+                return {
+                    container:
+                        "flex flex-col lg:flex-row h-[calc(100vh-10rem)]",
+                    inputPanel: "lg:w-[40%] flex-shrink-0",
+                    resizer:
+                        "hidden lg:flex w-2 cursor-col-resize hover:bg-accent/50 active:bg-accent",
+                    viewerPanel: "lg:w-[60%] flex-grow",
+                };
+        }
+    };
+
+    const layoutClasses = getLayoutClasses();
+
+    return (
+        <div className="container mx-auto py-4">
+            <div className="flex flex-col space-y-4">
+                <div className="flex justify-between items-center">
+                    <h1 className="text-2xl font-bold tracking-tight">
+                        CAD Model Generator
+                    </h1>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                                if (layoutMode === "viewer-focus") {
+                                    setLayoutMode("horizontal");
+                                } else {
+                                    setLayoutMode("viewer-focus");
+                                }
+                            }}
+                        >
+                            {layoutMode === "viewer-focus"
+                                ? "Show Input"
+                                : "Hide Input"}
+                        </Button>
+                    </div>
+                </div>
+
+                <LayoutToolbar />
+
+                <div ref={containerRef} className={layoutClasses.container}>
+                    {/* Input Panel */}
+                    <div
+                        className={`${layoutClasses.inputPanel} overflow-auto`}
+                    >
+                        <div className="h-full flex flex-col">
+                            <InputPanel
+                                onGenerateModel={handleGenerate}
+                                isGenerating={isGenerating}
+                            />
+
+                            {isGenerating && <ProcessingStatus />}
+
+                            {generatedModel && layoutMode !== "vertical" && (
+                                <ViewerSettings />
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Resizer */}
+                    <div
+                        className={layoutClasses.resizer}
+                        onMouseDown={handleResizeStart}
+                    >
+                        <div className="h-full w-full flex items-center justify-center">
+                            <GripVertical className="h-5 w-5 text-muted-foreground/40" />
+                        </div>
+                    </div>
+
+                    {/* Viewer Panel */}
+                    <div
+                        className={`${layoutClasses.viewerPanel} overflow-auto`}
+                    >
+                        <div className="h-full flex flex-col">
+                            <Card className="flex-grow overflow-hidden">
+                                <CardContent className="p-0 h-full">
+                                    <Tabs
+                                        value={activeTab}
+                                        onValueChange={setActiveTab}
+                                        className="h-full flex flex-col"
+                                    >
+                                        <div className="flex justify-between items-center p-3 border-b">
+                                            <CardTitle className="text-base font-medium">
+                                                Generated Model
+                                            </CardTitle>
+                                            <div className="flex items-center gap-2">
+                                                <TabsList>
+                                                    <TabsTrigger
+                                                        value="visual"
+                                                        className="text-xs px-3 py-1.5"
+                                                    >
+                                                        Visual
+                                                    </TabsTrigger>
+                                                    <TabsTrigger
+                                                        value="code"
+                                                        className="text-xs px-3 py-1.5"
+                                                    >
+                                                        Code
+                                                    </TabsTrigger>
+                                                    <TabsTrigger
+                                                        value="json"
+                                                        className="text-xs px-3 py-1.5"
+                                                    >
+                                                        JSON
+                                                    </TabsTrigger>
+                                                </TabsList>
+
+                                                {layoutMode === "vertical" &&
+                                                    generatedModel && (
+                                                        <Select
+                                                            value={
+                                                                viewerSettings.lighting
+                                                            }
+                                                            onValueChange={(
+                                                                value
+                                                            ) =>
+                                                                setViewerSettings(
+                                                                    (prev) => ({
+                                                                        ...prev,
+                                                                        lighting:
+                                                                            value,
+                                                                    })
                                                                 )
                                                             }
                                                         >
-                                                            <Save className="h-4 w-4" />
-                                                            Save as GLTF
-                                                        </Button>
-                                                        <Button
-                                                            variant="secondary"
-                                                            size="sm"
-                                                            className="gap-2 bg-background/80 backdrop-blur-sm hover:bg-background/90"
-                                                            onClick={() =>
-                                                                handleSaveModel(
-                                                                    "obj"
-                                                                )
+                                                            <SelectTrigger className="h-8 w-[110px]">
+                                                                <SelectValue placeholder="Lighting" />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                <SelectItem value="morning">
+                                                                    Morning
+                                                                </SelectItem>
+                                                                <SelectItem value="day">
+                                                                    Day
+                                                                </SelectItem>
+                                                                <SelectItem value="evening">
+                                                                    Evening
+                                                                </SelectItem>
+                                                                <SelectItem value="night">
+                                                                    Night
+                                                                </SelectItem>
+                                                            </SelectContent>
+                                                        </Select>
+                                                    )}
+                                            </div>
+                                        </div>
+
+                                        <div className="flex-1 overflow-hidden">
+                                            <TabsContent
+                                                value="visual"
+                                                className="h-full m-0 p-0"
+                                            >
+                                                {generatedModel ? (
+                                                    <div className="relative h-full">
+                                                        <CadModelViewer
+                                                            modelData={
+                                                                generatedModel
                                                             }
-                                                        >
-                                                            <Save className="h-4 w-4" />
-                                                            Save as OBJ
-                                                        </Button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className="h-[700px] flex items-center justify-center bg-muted/30">
-                                                    <div className="text-center p-6">
-                                                        <Wand2 className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                                                        <h3 className="text-lg font-medium mb-2">
-                                                            No Model Generated
-                                                            Yet
-                                                        </h3>
-                                                        <p className="text-muted-foreground max-w-md">
-                                                            {inputMode ===
-                                                            "text"
-                                                                ? "Enter a detailed description of your building or space and click 'Generate CAD Model'."
-                                                                : "Create a sketch of your floor plan and click 'Generate CAD Model'."}
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </TabsContent>
-
-                                        <TabsContent
-                                            value="code"
-                                            className="h-full m-0 p-0"
-                                        >
-                                            {generatedCode ? (
-                                                <div className="relative h-[700px]">
-                                                    <ScrollArea className="h-full">
-                                                        <pre
-                                                            ref={codeRef}
-                                                            className="p-4 text-sm font-mono"
-                                                        >
-                                                            <code>
-                                                                {generatedCode}
-                                                            </code>
-                                                        </pre>
-                                                    </ScrollArea>
-
-                                                    <div className="absolute top-4 right-4">
-                                                        <Button
-                                                            variant="secondary"
-                                                            size="sm"
-                                                            className="gap-2"
-                                                            onClick={
-                                                                handleCopyCode
+                                                            settings={
+                                                                viewerSettings
                                                             }
-                                                        >
-                                                            {copied ? (
-                                                                <>
-                                                                    <Check className="h-4 w-4" />
-                                                                    Copied!
-                                                                </>
-                                                            ) : (
-                                                                <>
-                                                                    <Copy className="h-4 w-4" />
-                                                                    Copy Code
-                                                                </>
-                                                            )}
-                                                        </Button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className="h-[700px] flex items-center justify-center bg-muted/30">
-                                                    <div className="text-center p-6">
-                                                        <Code className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                                                        <h3 className="text-lg font-medium mb-2">
-                                                            No Code Generated
-                                                            Yet
-                                                        </h3>
-                                                        <p className="text-muted-foreground max-w-md">
-                                                            Generate a model
-                                                            first to see the
-                                                            corresponding
-                                                            Three.js code.
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </TabsContent>
+                                                        />
 
-                                        <TabsContent
-                                            value="json"
-                                            className="h-full m-0 p-0"
-                                        >
-                                            {generatedModel ? (
-                                                <div className="relative h-[700px]">
-                                                    <ScrollArea className="h-full">
-                                                        <pre className="p-4 text-sm font-mono">
-                                                            <code>
-                                                                {JSON.stringify(
-                                                                    generatedModel,
-                                                                    null,
-                                                                    2
+                                                        <div className="absolute bottom-4 right-4 flex space-x-2">
+                                                            <Button
+                                                                variant="secondary"
+                                                                size="sm"
+                                                                className="gap-2 bg-background/80 backdrop-blur-sm hover:bg-background/90"
+                                                                onClick={() =>
+                                                                    handleSaveModel(
+                                                                        "gltf"
+                                                                    )
+                                                                }
+                                                            >
+                                                                <Save className="h-4 w-4" />
+                                                                Save as GLTF
+                                                            </Button>
+                                                            <Button
+                                                                variant="secondary"
+                                                                size="sm"
+                                                                className="gap-2 bg-background/80 backdrop-blur-sm hover:bg-background/90"
+                                                                onClick={() =>
+                                                                    handleSaveModel(
+                                                                        "obj"
+                                                                    )
+                                                                }
+                                                            >
+                                                                <Save className="h-4 w-4" />
+                                                                Save as OBJ
+                                                            </Button>
+                                                            <Button
+                                                                variant="secondary"
+                                                                size="sm"
+                                                                className="gap-2 bg-background/80 backdrop-blur-sm hover:bg-background/90"
+                                                                onClick={() => {
+                                                                    const viewerElement =
+                                                                        document.querySelector(
+                                                                            ".cad-viewer-container"
+                                                                        );
+                                                                    if (
+                                                                        viewerElement
+                                                                    ) {
+                                                                        if (
+                                                                            document.fullscreenElement
+                                                                        ) {
+                                                                            document.exitFullscreen();
+                                                                        } else {
+                                                                            viewerElement.requestFullscreen();
+                                                                        }
+                                                                    }
+                                                                }}
+                                                            >
+                                                                <Maximize2 className="h-4 w-4" />
+                                                                Fullscreen
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="h-full flex items-center justify-center bg-muted/30">
+                                                        <div className="text-center p-6">
+                                                            <Wand2 className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                                                            <h3 className="text-lg font-medium mb-2">
+                                                                No Model
+                                                                Generated Yet
+                                                            </h3>
+                                                            <p className="text-muted-foreground max-w-md">
+                                                                Use the input
+                                                                panel to
+                                                                describe your
+                                                                building or
+                                                                space, then
+                                                                click 'Generate
+                                                                CAD Model'.
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </TabsContent>
+
+                                            <TabsContent
+                                                value="code"
+                                                className="h-full m-0 p-0"
+                                            >
+                                                {generatedCode ? (
+                                                    <div className="relative h-full">
+                                                        <ScrollArea className="h-full">
+                                                            <pre
+                                                                ref={codeRef}
+                                                                className="p-4 text-sm font-mono"
+                                                            >
+                                                                <code>
+                                                                    {
+                                                                        generatedCode
+                                                                    }
+                                                                </code>
+                                                            </pre>
+                                                        </ScrollArea>
+
+                                                        <div className="absolute top-4 right-4">
+                                                            <Button
+                                                                variant="secondary"
+                                                                size="sm"
+                                                                className="gap-2"
+                                                                onClick={
+                                                                    handleCopyCode
+                                                                }
+                                                            >
+                                                                {copied ? (
+                                                                    <>
+                                                                        <Check className="h-4 w-4" />
+                                                                        Copied!
+                                                                    </>
+                                                                ) : (
+                                                                    <>
+                                                                        <Copy className="h-4 w-4" />
+                                                                        Copy
+                                                                        Code
+                                                                    </>
                                                                 )}
-                                                            </code>
-                                                        </pre>
-                                                    </ScrollArea>
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="h-full flex items-center justify-center bg-muted/30">
+                                                        <div className="text-center p-6">
+                                                            <Code className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                                                            <h3 className="text-lg font-medium mb-2">
+                                                                No Code
+                                                                Generated Yet
+                                                            </h3>
+                                                            <p className="text-muted-foreground max-w-md">
+                                                                Generate a model
+                                                                first to see the
+                                                                corresponding
+                                                                Three.js code.
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </TabsContent>
 
-                                                    <div className="absolute top-4 right-4">
-                                                        <Button
-                                                            variant="secondary"
-                                                            size="sm"
-                                                            className="gap-2"
-                                                            onClick={() => {
-                                                                navigator.clipboard.writeText(
-                                                                    JSON.stringify(
+                                            <TabsContent
+                                                value="json"
+                                                className="h-full m-0 p-0"
+                                            >
+                                                {generatedModel ? (
+                                                    <div className="relative h-full">
+                                                        <ScrollArea className="h-full">
+                                                            <pre className="p-4 text-sm font-mono">
+                                                                <code>
+                                                                    {JSON.stringify(
                                                                         generatedModel,
                                                                         null,
                                                                         2
-                                                                    )
-                                                                );
-                                                                toast({
-                                                                    title: "JSON copied",
-                                                                    description:
-                                                                        "The model data has been copied to your clipboard.",
-                                                                });
-                                                            }}
-                                                        >
-                                                            <Copy className="h-4 w-4" />
-                                                            Copy JSON
-                                                        </Button>
+                                                                    )}
+                                                                </code>
+                                                            </pre>
+                                                        </ScrollArea>
+
+                                                        <div className="absolute top-4 right-4">
+                                                            <Button
+                                                                variant="secondary"
+                                                                size="sm"
+                                                                className="gap-2"
+                                                                onClick={() => {
+                                                                    navigator.clipboard.writeText(
+                                                                        JSON.stringify(
+                                                                            generatedModel,
+                                                                            null,
+                                                                            2
+                                                                        )
+                                                                    );
+                                                                    toast({
+                                                                        title: "JSON copied",
+                                                                        description:
+                                                                            "The model data has been copied to your clipboard.",
+                                                                    });
+                                                                }}
+                                                            >
+                                                                <Copy className="h-4 w-4" />
+                                                                Copy JSON
+                                                            </Button>
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            ) : (
-                                                <div className="h-[700px] flex items-center justify-center bg-muted/30">
-                                                    <div className="text-center p-6">
-                                                        <Code className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                                                        <h3 className="text-lg font-medium mb-2">
-                                                            No JSON Generated
-                                                            Yet
-                                                        </h3>
-                                                        <p className="text-muted-foreground max-w-md">
-                                                            Generate a model
-                                                            first to see the
-                                                            structured JSON
-                                                            data.
-                                                        </p>
+                                                ) : (
+                                                    <div className="h-full flex items-center justify-center bg-muted/30">
+                                                        <div className="text-center p-6">
+                                                            <Code className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                                                            <h3 className="text-lg font-medium mb-2">
+                                                                No JSON
+                                                                Generated Yet
+                                                            </h3>
+                                                            <p className="text-muted-foreground max-w-md">
+                                                                Generate a model
+                                                                first to see the
+                                                                structured JSON
+                                                                data.
+                                                            </p>
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            )}
-                                        </TabsContent>
-                                    </div>
-                                </Tabs>
-                            </CardContent>
-                        </Card>
+                                                )}
+                                            </TabsContent>
+                                        </div>
+                                    </Tabs>
+                                </CardContent>
+                            </Card>
+                        </div>
                     </div>
                 </div>
             </div>

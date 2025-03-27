@@ -5,29 +5,37 @@ export async function POST(req: Request) {
     try {
         // Parse the request body
         const body = await req.json();
-        const { prompt, sketchData } = body;
+        const { prompt, sketchData, speechData, photoData } = body;
 
-        // Validate the input
-        if (!sketchData && !prompt) {
+        // Validate the input - at least one input type is required
+        if (!prompt && !sketchData && !speechData && !photoData) {
             return NextResponse.json(
-                { error: "Either prompt or sketchData is required" },
+                {
+                    error: "At least one input type (prompt, sketchData, speechData, or photoData) is required",
+                },
                 { status: 400 }
             );
         }
 
-        // Create a default prompt if only sketch data is provided
-        // This ensures we always have a prompt for the generateCadModel function
+        // Create a default prompt if only non-text inputs are provided
         const textPrompt =
-            prompt || "Generate a CAD model based on this sketch";
+            prompt || "Generate a CAD model based on the provided inputs";
 
         console.log(
-            `Processing request with ${prompt ? "prompt" : "no prompt"} and ${
-                sketchData ? "sketch data" : "no sketch data"
-            }`
+            `Processing request with:
+            - Text prompt: ${prompt ? "provided" : "not provided"}
+            - Sketch data: ${sketchData ? "provided" : "not provided"}
+            - Speech data: ${speechData ? "provided" : "not provided"}
+            - Photo data: ${photoData ? "provided" : "not provided"}`
         );
 
-        // Generate the CAD model using both inputs
-        const result = await generateCadModel(textPrompt, sketchData);
+        // Generate the CAD model using all available inputs
+        const result = await generateCadModel(
+            textPrompt,
+            sketchData,
+            speechData,
+            photoData
+        );
 
         return NextResponse.json(result);
     } catch (error) {

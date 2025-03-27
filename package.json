@@ -11,6 +11,7 @@
   "dependencies": {
     "@ai-sdk/openai": "latest",
     "@azure/cognitiveservices-computervision": "^8.2.0",
+    "@azure/cognitiveservices-contentmoderator": "^5.0.1",
     "@azure/ms-rest-js": "^2.7.0",
     "@azure/openai": "^2.0.0",
     "@headlessui/react": "latest",
@@ -57,6 +58,7 @@
     "expo-gl": "latest",
     "input-otp": "1.4.1",
     "lucide-react": "^0.454.0",
+    "microsoft-cognitiveservices-speech-sdk": "^1.43.0",
     "next": "15.1.0",
     "next-themes": "latest",
     "openai": "^4.89.0",
