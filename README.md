@@ -4,7 +4,13 @@ AIDraft is a cutting-edge architectural design platform that integrates artifici
 
 ---
 
-![AIDraft Overview](/app_architecture.png)
+## Application Architecture
+
+![AIDraft Architecture](/app_architecture.png)
+
+## Platform Features
+
+![AIDraft Features](/cad_generator.png)
 
 ---
 
