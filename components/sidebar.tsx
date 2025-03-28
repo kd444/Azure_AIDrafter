@@ -96,13 +96,6 @@ export function Sidebar() {
                             collapsed={collapsed}
                         />
                         <NavItem
-                            href="/templates"
-                            icon={<Building2 className="h-5 w-5" />}
-                            label="Templates"
-                            active={pathname.startsWith("/templates")}
-                            collapsed={collapsed}
-                        />
-                        <NavItem
                             href="/cad-test"
                             icon={<Building2 className="h-5 w-5" />}
                             label="CAD Test"

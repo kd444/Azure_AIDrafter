@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Rounded square background -->
+  <rect width="512" height="512" fill="#3b5bdb" rx="128" ry="128" />
+  
+  <!-- CPU/Chip outline -->
+  <rect x="128" y="128" width="256" height="256" fill="none" stroke="white" stroke-width="24" rx="32" ry="32" />
+  
+  <!-- Center square -->
+  <rect x="192" y="192" width="128" height="128" fill="none" stroke="white" stroke-width="24" rx="16" ry="16" />
+  
+  <!-- Connection points -->
+  <rect x="244" y="96" width="24" height="64" fill="white" rx="8" ry="8" />
+  <rect x="244" y="352" width="24" height="64" fill="white" rx="8" ry="8" />
+  <rect x="96" y="244" width="64" height="24" fill="white" rx="8" ry="8" />
+  <rect x="352" y="244" width="64" height="24" fill="white" rx="8" ry="8" />
+</svg>
+
